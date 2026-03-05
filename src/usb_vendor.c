@@ -2,6 +2,7 @@
 
 #include "ch554.h"
 #include "ch554_usb.h"
+#include "debug.h"
 
 #include "usb_vendor.h"
 
@@ -78,7 +79,7 @@ static const uint8_t __code str_mfr[] = {
 };
 
 static const uint8_t __code str_prod[] = {
-    0x20,
+    0x24,
     USB_DESCR_TYP_STRING,
     'C', 0x00,
     'H', 0x00,
@@ -94,7 +95,9 @@ static const uint8_t __code str_prod[] = {
     'r', 0x00,
     ' ', 0x00,
     'G', 0x00,
-    'P', 0x00
+    'P', 0x00,
+    'I', 0x00,
+    'O', 0x00
 };
 
 static const uint8_t __code str_serial[] = {
@@ -302,7 +305,8 @@ static void handle_setup_packet(void)
     setup_req.wLengthH = ep0_buffer[7];
 
     ep0_data_remaining = 0;
-    UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
+    /* After SETUP token, USB spec requires DATA1 for both next TX and RX */
+    UEP0_CTRL = bUEP_R_TOG | bUEP_T_TOG | UEP_R_RES_ACK | UEP_T_RES_NAK;
 
     if ((setup_req.bRequestType & USB_REQ_TYP_MASK) == USB_REQ_TYP_STANDARD) {
         handle_standard_request();
@@ -323,30 +327,45 @@ static void handle_setup_packet(void)
 
 void usb_vendor_init(void)
 {
+    /* 1. Enable USB I/O pins */
     PIN_FUNC |= bUSB_IO_EN;
 
+    /* 2. Reset USB SIE — hold reset long enough for hardware */
     USB_CTRL = bUC_RESET_SIE | bUC_CLR_ALL;
+    mDelayuS(100);
     USB_CTRL = 0x00;
+    mDelayuS(100);
 
+    /* 3. Disable all endpoints except EP0 */
     UEP4_1_MOD = 0x00;
     UEP2_3_MOD = 0x00;
 
-    UEP0_DMA = (uint16_t)ep0_buffer;
+    /* 4. Configure EP0 DMA buffer and default response */
+    UEP0_DMA_L = 0x00;
+    UEP0_DMA_H = 0x00;
     UEP0_T_LEN = 0;
     UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
 
+    /* 5. Reset device address */
     USB_DEV_AD = 0x00;
     pending_address = 0;
     usb_config_value = 0;
 
-    USB_CTRL = bUC_DEV_PU_EN | bUC_INT_BUSY | bUC_DMA_EN;
+    /* 6. Enable USB port (no pull-up yet — host must not see us) */
     UDEV_CTRL = bUD_PD_DIS | bUD_PORT_EN;
 
+    /* 7. Clear ALL interrupt flags before enabling interrupts */
     USB_INT_FG = 0xFF;
-    USB_INT_EN = bUIE_SUSPEND | bUIE_TRANSFER | bUIE_BUS_RST;
 
+    /* 8. Enable USB interrupts */
+    USB_INT_EN = bUIE_SUSPEND | bUIE_TRANSFER | bUIE_BUS_RST;
     IE_USB = 1;
     EA = 1;
+
+    /* 9. Enable DMA first, then enable pull-up — host sees device NOW */
+    USB_CTRL = bUC_DMA_EN | bUC_INT_BUSY;
+    mDelaymS(1);
+    USB_CTRL = bUC_DEV_PU_EN | bUC_INT_BUSY | bUC_DMA_EN;
 }
 
 void USBInterrupt(void) __interrupt(INT_NO_USB)
@@ -356,9 +375,12 @@ void USBInterrupt(void) __interrupt(INT_NO_USB)
     if (UIF_BUS_RST) {
         USB_DEV_AD = 0x00;
         pending_address = 0;
+        usb_config_value = 0;
+        ep0_data_remaining = 0;
         UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
         UEP0_T_LEN = 0;
-        UIF_BUS_RST = 0;
+        USB_INT_FG = 0xFF;  /* clear all flags at once on bus reset */
+        return;
     }
 
     if (UIF_TRANSFER) {
@@ -371,6 +393,9 @@ void USBInterrupt(void) __interrupt(INT_NO_USB)
                 break;
 
             case UIS_TOKEN_IN:
+                /* Toggle TX data toggle for next IN packet (EP0 has no auto-toggle) */
+                UEP0_CTRL ^= bUEP_T_TOG;
+
                 if (pending_address != 0) {
                     USB_DEV_AD = (USB_DEV_AD & bUDA_GP_BIT) | pending_address;
                     pending_address = 0;
@@ -398,5 +423,8 @@ void USBInterrupt(void) __interrupt(INT_NO_USB)
 
     if (UIF_SUSPEND) {
         UIF_SUSPEND = 0;
+        if (USB_MIS_ST & bUMS_SUSPEND) {
+            /* Enter suspend — clear wakeup flag */
+        }
     }
 }
