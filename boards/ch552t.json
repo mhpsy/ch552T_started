@@ -5,7 +5,7 @@
     "f_cpu": "24000000L",
     "size_iram": 256,
     "size_xram": 1024,
-    "size_code": 16384,
+    "size_code": 14336,
     "size_heap": 128,
     "mcu": "CH552",
     "extra_flags": "-DCH552 -DCH55X"
@@ -14,13 +14,10 @@
   "name": "WCH CH552T (custom)",
   "url": "https://www.wch-ic.com/products/CH552.html",
   "upload": {
-    "maximum_ram_size": 1024,
-    "maximum_size": 16384,
-    "protocol": "ch55x",
-    "protocols": [
-      "ch55x",
-      "custom"
-    ]
+    "maximum_ram_size": 1280,
+    "maximum_size": 14336,
+    "protocol": "custom",
+    "protocols": ["custom"]
   },
   "vendor": "WCH"
 }
