@@ -6,12 +6,38 @@
 
 #include "usb_vendor.h"
 
-#define PIN10_MASK bRXD
-#define PIN11_MASK bTXD
+/*
+ * Pin ID encoding: high nibble = port number, low nibble = bit number
+ * CH552T TSSOP-20 available GPIO pins:
+ *
+ *   Port 1 (8 pins)              Port 3 (6 pins, P3.6/P3.7 = USB)
+ *   P1.0  pin 2   T2/CAP1        P3.0  pin 15  RXD/PWM1_
+ *   P1.1  pin 3   T2EX/CAP2/AIN0 P3.1  pin 16  TXD/PWM2_
+ *   P1.2  pin 4   RXD_            P3.2  pin 17  INT0/TXD1_/AIN3
+ *   P1.3  pin 5   TXD_            P3.3  pin 18  INT1
+ *   P1.4  pin 6   SCS/AIN1        P3.4  pin 19  PWM2/RXD1_/T0
+ *   P1.5  pin 7   MOSI/PWM1/AIN2  P3.5  pin 20  T1
+ *   P1.6  pin 8   MISO/RXD1
+ *   P1.7  pin 9   SCK/TXD1
+ */
+#define PIN_P10  0x10
+#define PIN_P11  0x11
+#define PIN_P12  0x12
+#define PIN_P13  0x13
+#define PIN_P14  0x14
+#define PIN_P15  0x15
+#define PIN_P16  0x16
+#define PIN_P17  0x17
+#define PIN_P30  0x30
+#define PIN_P31  0x31
+#define PIN_P32  0x32
+#define PIN_P33  0x33
+#define PIN_P34  0x34
+#define PIN_P35  0x35
 
-#define VND_REQ_PIN10_FORCE_LOW 0x01
-#define VND_REQ_PIN11_WRITE     0x02
-#define VND_REQ_GPIO_STATE      0x03
+#define VND_REQ_GPIO_WRITE    0x01  /* wValueL = pin_id, wIndexL = level */
+#define VND_REQ_GPIO_READ     0x02  /* wValueL = pin_id, returns 1 byte  */
+#define VND_REQ_GPIO_READ_ALL 0x03  /* returns 2 bytes: [P1, P3]         */
 
 static __xdata __at (0x0000) uint8_t ep0_buffer[MAX_PACKET_SIZE];
 static USB_SETUP_REQ setup_req;
@@ -111,27 +137,59 @@ static const uint8_t __code str_serial[] = {
     '1', 0x00
 };
 
-static void pin10_force_low(void)
+static uint8_t gpio_write_pin(uint8_t pin_id, uint8_t level)
 {
-    P3 &= (uint8_t)~PIN10_MASK;
-}
+    uint8_t port = pin_id >> 4;
+    uint8_t bit  = pin_id & 0x0F;
+    uint8_t mask;
 
-static void pin11_write(uint8_t level)
-{
-    if (level) {
-        P3 |= PIN11_MASK;
-    } else {
-        P3 &= (uint8_t)~PIN11_MASK;
+    if (bit > 7) return 0;
+    mask = (uint8_t)(1 << bit);
+
+    if (port == 1) {
+        if (level) P1 |= mask;
+        else       P1 &= (uint8_t)~mask;
+        return 1;
     }
+    if (port == 3 && bit <= 5) {
+        if (level) P3 |= mask;
+        else       P3 &= (uint8_t)~mask;
+        return 1;
+    }
+    return 0;
 }
 
-void gpio_demo_init(void)
+static uint8_t gpio_read_pin(uint8_t pin_id, uint8_t *out)
 {
-    P3_MOD_OC &= (uint8_t)~(PIN10_MASK | PIN11_MASK);
-    P3_DIR_PU |= (PIN10_MASK | PIN11_MASK);
+    uint8_t port = pin_id >> 4;
+    uint8_t bit  = pin_id & 0x0F;
+    uint8_t mask;
 
-    pin10_force_low();
-    pin11_write(0);
+    if (bit > 7) return 0;
+    mask = (uint8_t)(1 << bit);
+
+    if (port == 1) {
+        *out = (P1 & mask) ? 1 : 0;
+        return 1;
+    }
+    if (port == 3) {
+        *out = (P3 & mask) ? 1 : 0;
+        return 1;
+    }
+    return 0;
+}
+
+void gpio_init_all_low(void)
+{
+    /* P1.0~P1.7: push-pull output, all low */
+    P1_MOD_OC = 0x00;
+    P1_DIR_PU = 0xFF;
+    P1 = 0x00;
+
+    /* P3.0~P3.5: push-pull output, all low (P3.6/P3.7 = USB, untouched) */
+    P3_MOD_OC &= 0xC0;
+    P3_DIR_PU |= 0x3F;
+    P3 &= 0xC0;
 }
 
 static void ep0_set_tx_ack(uint8_t len)
@@ -261,32 +319,34 @@ static void handle_standard_request(void)
 
 static void handle_vendor_request(void)
 {
+    uint8_t pin_val;
+
     if ((setup_req.bRequestType & USB_REQ_TYP_IN) == USB_REQ_TYP_IN) {
-        if (setup_req.bRequest == VND_REQ_GPIO_STATE) {
-            ep0_buffer[0] = 0;
-            if (P3 & PIN10_MASK) {
-                ep0_buffer[0] |= 0x01;
+        if (setup_req.bRequest == VND_REQ_GPIO_READ) {
+            if (gpio_read_pin(setup_req.wValueL, &pin_val)) {
+                ep0_buffer[0] = pin_val;
+                ep0_set_tx_ack(1);
+            } else {
+                ep0_stall();
             }
-            if (P3 & PIN11_MASK) {
-                ep0_buffer[0] |= 0x02;
-            }
-            ep0_set_tx_ack(1);
             return;
         }
-
+        if (setup_req.bRequest == VND_REQ_GPIO_READ_ALL) {
+            ep0_buffer[0] = P1;
+            ep0_buffer[1] = P3;
+            ep0_set_tx_ack(2);
+            return;
+        }
         ep0_stall();
         return;
     }
 
-    if (setup_req.bRequest == VND_REQ_PIN10_FORCE_LOW) {
-        pin10_force_low();
-        ep0_send_zlp();
-        return;
-    }
-
-    if (setup_req.bRequest == VND_REQ_PIN11_WRITE) {
-        pin11_write(setup_req.wValueL ? 1 : 0);
-        ep0_send_zlp();
+    if (setup_req.bRequest == VND_REQ_GPIO_WRITE) {
+        if (gpio_write_pin(setup_req.wValueL, setup_req.wIndexL ? 1 : 0)) {
+            ep0_send_zlp();
+        } else {
+            ep0_stall();
+        }
         return;
     }
 

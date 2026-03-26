@@ -24,7 +24,7 @@ void main(void)
     CfgFsys();
     mDelaymS(20);  /* longer delay for PLL/oscillator stabilization */
 
-    gpio_demo_init();
+    gpio_init_all_low();
     usb_vendor_init();
 
 
