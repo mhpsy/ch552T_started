@@ -3,6 +3,7 @@
 #include "ch554.h"
 #include "debug.h"
 #include "usb_vendor.h"
+// #include "usb_hid.h"
 
 /*
  * SDCC 4.1.0 does not auto-generate the interrupt vector LJMP for
@@ -26,6 +27,10 @@ void main(void)
     gpio_demo_init();
     usb_vendor_init();
 
-    while (1) {
-    }
+
+    // gpio_hid_init();
+    // usb_hid_init();
+    // while (1) {usb_hid_process();}
+
+    while (1) {}
 }
